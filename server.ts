@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Readable } from 'node:stream';
 import {
   getCatalog,
   search,
@@ -241,7 +242,8 @@ app.get('/api/proxy-media', async (req: Request, res: Response) => {
 
     const upstream = await fetch(targetUrl, { headers });
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    // Cache immutable media chunks for 24h to avoid repeat cellular downloads on mobile
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
 
     if (upstream.headers.get('content-type')) {
       res.setHeader('Content-Type', upstream.headers.get('content-type')!);
@@ -259,13 +261,8 @@ app.get('/api/proxy-media', async (req: Request, res: Response) => {
     res.status(upstream.status);
 
     if (upstream.body) {
-      const reader = upstream.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
-      }
-      res.end();
+      // Pipe stream with natural backpressure to prevent buffer bloat and lag on mobile
+      Readable.fromWeb(upstream.body as any).pipe(res);
     } else {
       res.end();
     }

@@ -82,6 +82,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [resumeToast, setResumeToast] = useState<string | null>(null);
   const lastSavedTimeRef = useRef<number>(0);
 
+  // Performance throttling refs for smooth mobile playback (prevents 10x/sec re-render loops)
+  const lastTimeUpdateRef = useRef<number>(0);
+  const lastActiveSubtitleRef = useRef<string>('');
+
   // Subtitles & Settings
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
   const [selectedSubLang, setSelectedSubLang] = useState<string>('id-ID'); // default to Indonesian
@@ -213,8 +217,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 60,
+        lowLatencyMode: false, // Disabling lowLatencyMode prevents aggressive segment polling and buffer underruns on mobile
+        capLevelToPlayerSize: true, // Prevents decoding excessive 1080p/2K video variants on phone displays
+        maxBufferLength: isMobile ? 15 : 25,
+        maxMaxBufferLength: isMobile ? 30 : 50,
+        maxBufferSize: isMobile ? 25 * 1000 * 1000 : 50 * 1000 * 1000,
+        backBufferLength: isMobile ? 10 : 20,
+        startFragPrefetch: true,
+        autoStartLoad: true,
+        maxBufferHole: 0.5,
+        nudgeOffset: 0.2,
+        nudgeMaxRetry: 5,
       });
       hlsRef.current = hls;
 
@@ -323,23 +336,34 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const video = videoRef.current;
     if (!video) return;
     const t = video.currentTime;
-    setCurrentTime(t);
     const d = video.duration || 0;
     if (d && (!duration || duration !== d)) {
       setDuration(d);
     }
 
+    // Throttle React state re-renders to ~250ms during active playback
+    // Drastically reduces mobile main-thread CPU load and prevents playback stutter
+    const delta = Math.abs(t - lastTimeUpdateRef.current);
+    if (delta >= 0.25) {
+      lastTimeUpdateRef.current = t;
+      setCurrentTime(t);
+    }
+
     // Save progress periodically to remember position when switching episodes
-    if (Math.abs(t - lastSavedTimeRef.current) >= 1.5) {
+    if (Math.abs(t - lastSavedTimeRef.current) >= 2.0) {
       lastSavedTimeRef.current = t;
       saveEpisodePlaybackPosition(series.id, currentEpIndex, t, d, false);
     }
 
-    // Sync subtitle text
+    // Only update subtitle state when text actually changes
     if (cuesRef.current.length > 0) {
       const activeText = getActiveSubtitleText(cuesRef.current, t);
-      setCurrentSubtitleText(activeText);
-    } else {
+      if (activeText !== lastActiveSubtitleRef.current) {
+        lastActiveSubtitleRef.current = activeText;
+        setCurrentSubtitleText(activeText);
+      }
+    } else if (lastActiveSubtitleRef.current !== '') {
+      lastActiveSubtitleRef.current = '';
       setCurrentSubtitleText('');
     }
   };
@@ -610,20 +634,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <video
             ref={videoRef}
             playsInline
+            preload="auto"
             onPlay={handlePlay}
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}
             onEnded={handleEnded}
             onDoubleClick={toggleFullscreen}
-            className={`w-full h-full transition-all ${
+            className={`w-full h-full [transform:translateZ(0)] transition-all ${
               aspectMode === 'cover' ? 'object-cover' : 'object-contain'
             }`}
           />
 
           {/* 2X Speed Up Floating Badge Overlay */}
           {isSpeedingUp && (
-            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 bg-black/90 backdrop-blur-md rounded-full border border-sky-400 dark:border-[#38bdf8] shadow-[0_0_25px_rgba(56,189,248,0.45)] pointer-events-none animate-in fade-in zoom-in duration-150">
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 bg-neutral-950/95 rounded-full border border-sky-400 dark:border-[#38bdf8] shadow-[0_0_20px_rgba(56,189,248,0.35)] pointer-events-none animate-in fade-in zoom-in duration-150">
               <FastForward className="w-4 h-4 text-sky-400 dark:text-[#38bdf8] animate-pulse" />
               <span className="text-xs font-mono font-bold tracking-wider text-sky-400 dark:text-[#38bdf8]">
                 2X KECEPATAN »»
@@ -638,7 +663,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           {/* Resume Playback Toast Notification */}
           {resumeToast && !isSpeedingUp && (
-            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3.5 py-1.5 bg-black/90 backdrop-blur-md rounded-full border border-sky-400 dark:border-[#38bdf8] text-sky-400 dark:text-[#38bdf8] text-xs font-mono font-medium shadow-xl pointer-events-none animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3.5 py-1.5 bg-neutral-950/95 rounded-full border border-sky-400 dark:border-[#38bdf8] text-sky-400 dark:text-[#38bdf8] text-xs font-mono font-medium shadow-xl pointer-events-none animate-in fade-in slide-in-from-top-2 duration-200">
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{resumeToast}</span>
             </div>
@@ -647,7 +672,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           {/* Centered Pause Indicator Badge when paused */}
           {!isPlaying && !loading && !errorMsg && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-              <div className="p-4 rounded-full bg-black/60 backdrop-blur-sm text-white/90 shadow-xl border border-white/10 animate-in fade-in zoom-in duration-200">
+              <div className="p-4 rounded-full bg-black/75 text-white/90 shadow-xl border border-white/10 animate-in fade-in zoom-in duration-200">
                 <Play className="w-12 h-12 fill-white translate-x-0.5" />
               </div>
             </div>
@@ -660,7 +685,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 showControls ? 'bottom-20' : 'bottom-8'
               }`}
             >
-              <span className="inline-block px-4 py-1.5 bg-black/85 backdrop-blur-xs text-amber-200 sm:text-lg font-semibold rounded-lg text-balance shadow-2xl [text-shadow:_0_2px_4px_rgb(0_0_0_/_95%),_0_0_2px_rgb(0_0_0_/_100%)] leading-snug tracking-wide whitespace-pre-line border border-black/40 max-w-2xl">
+              <span className="inline-block px-4 py-1.5 bg-black/90 text-amber-200 sm:text-lg font-semibold rounded-lg text-balance shadow-2xl [text-shadow:_0_2px_4px_rgb(0_0_0_/_95%),_0_0_2px_rgb(0_0_0_/_100%)] leading-snug tracking-wide whitespace-pre-line border border-black/50 max-w-2xl">
                 {currentSubtitleText}
               </span>
             </div>

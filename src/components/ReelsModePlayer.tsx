@@ -64,6 +64,10 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
   const [resumeToast, setResumeToast] = useState<string | null>(null);
   const lastSavedTimeRef = useRef<number>(0);
 
+  // Performance throttling refs for smooth mobile playback (prevents 10x/sec re-render loops)
+  const lastTimeUpdateRef = useRef<number>(0);
+  const lastActiveSubtitleRef = useRef<string>('');
+
   // Hold-to-speed-up (2X) on right half of video screen
   const [isSpeedingUp, setIsSpeedingUp] = useState<boolean>(false);
   const speedUpTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -208,7 +212,20 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
     }
 
     if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false, // Critical: lowLatencyMode causes buffer underruns and micro-stutters on mobile VOD
+        capLevelToPlayerSize: true, // Prevents decoding heavy 1080p/2K video variants on mobile screens
+        maxBufferLength: isMobile ? 15 : 25,
+        maxMaxBufferLength: isMobile ? 30 : 50,
+        maxBufferSize: isMobile ? 25 * 1000 * 1000 : 50 * 1000 * 1000,
+        backBufferLength: isMobile ? 10 : 20,
+        startFragPrefetch: true,
+        autoStartLoad: true,
+        maxBufferHole: 0.5,
+        nudgeOffset: 0.2,
+        nudgeMaxRetry: 5,
+      });
       hlsRef.current = hls;
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
@@ -217,6 +234,21 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
         setLoading(false);
         applyResumeIfAvailable();
         video.play().catch(() => setIsPlaying(false));
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              break;
+          }
+        }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = streamUrl;
@@ -413,25 +445,37 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
     const video = videoRef.current;
     if (!video) return;
     const t = video.currentTime;
-    setCurrentTime(t);
     const d = video.duration || 0;
     if (d && (!duration || duration !== d)) {
       setDuration(d);
     }
-    if (!isScrubbing && d > 0) {
-      setProgress((t / d) * 100);
+
+    // Throttle React state re-renders to ~250ms during active playback
+    // Drastically reduces mobile main-thread CPU load and prevents playback stutter
+    const delta = Math.abs(t - lastTimeUpdateRef.current);
+    if (delta >= 0.25 || isScrubbing) {
+      lastTimeUpdateRef.current = t;
+      setCurrentTime(t);
+      if (!isScrubbing && d > 0) {
+        setProgress((t / d) * 100);
+      }
     }
 
     // Save progress periodically to remember position when switching episodes
-    if (Math.abs(t - lastSavedTimeRef.current) >= 1.5) {
+    if (Math.abs(t - lastSavedTimeRef.current) >= 2.0) {
       lastSavedTimeRef.current = t;
       saveEpisodePlaybackPosition(series.id, currentEpIndex, t, d, false);
     }
 
+    // Only update subtitle state when text actually changes
     if (cuesRef.current.length) {
       const activeText = getActiveSubtitleText(cuesRef.current, t);
-      setSubtitleText(activeText);
-    } else {
+      if (activeText !== lastActiveSubtitleRef.current) {
+        lastActiveSubtitleRef.current = activeText;
+        setSubtitleText(activeText);
+      }
+    } else if (lastActiveSubtitleRef.current !== '') {
+      lastActiveSubtitleRef.current = '';
       setSubtitleText('');
     }
   };
@@ -655,17 +699,18 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
           <video
             ref={videoRef}
             playsInline
+            preload="auto"
             onPlay={handlePlay}
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}
             onEnded={handleEnded}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover [transform:translateZ(0)]"
           />
 
           {/* 2X Speed Up Floating Badge Overlay */}
           {isSpeedingUp && (
-            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 bg-black/90 backdrop-blur-md rounded-full border border-sky-400 dark:border-[#38bdf8] shadow-[0_0_25px_rgba(56,189,248,0.45)] pointer-events-none animate-in fade-in zoom-in duration-150">
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 bg-neutral-950/95 rounded-full border border-sky-400 dark:border-[#38bdf8] shadow-[0_0_20px_rgba(56,189,248,0.35)] pointer-events-none animate-in fade-in zoom-in duration-150">
               <FastForward className="w-4 h-4 text-sky-400 dark:text-[#38bdf8] animate-pulse" />
               <span className="text-xs font-mono font-bold tracking-wider text-sky-400 dark:text-[#38bdf8]">
                 2X KECEPATAN »»
@@ -680,7 +725,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
 
           {/* Resume Playback Toast Notification */}
           {resumeToast && !isSpeedingUp && (
-            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3.5 py-1.5 bg-black/90 backdrop-blur-md rounded-full border border-sky-400 dark:border-[#38bdf8] text-sky-400 dark:text-[#38bdf8] text-xs font-mono font-medium shadow-xl pointer-events-none animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3.5 py-1.5 bg-neutral-950/95 rounded-full border border-sky-400 dark:border-[#38bdf8] text-sky-400 dark:text-[#38bdf8] text-xs font-mono font-medium shadow-xl pointer-events-none animate-in fade-in slide-in-from-top-2 duration-200">
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{resumeToast}</span>
             </div>
@@ -693,7 +738,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
                 showUi ? 'bottom-24 sm:right-16' : 'bottom-8'
               }`}
             >
-              <span className="inline-block px-3.5 py-1.5 bg-black/85 backdrop-blur-xs text-amber-200 text-sm font-semibold rounded-lg [text-shadow:_0_1px_3px_rgb(0_0_0_/_95%),_0_0_2px_rgb(0_0_0_/_100%)] leading-snug whitespace-pre-line shadow-2xl border border-black/40 max-w-sm">
+              <span className="inline-block px-3.5 py-1.5 bg-black/90 text-amber-200 text-sm font-semibold rounded-lg [text-shadow:_0_1px_3px_rgb(0_0_0_/_95%),_0_0_2px_rgb(0_0_0_/_100%)] leading-snug whitespace-pre-line shadow-2xl border border-black/50 max-w-sm">
                 {subtitleText}
               </span>
             </div>
@@ -717,7 +762,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
           {/* Centered Pause Indicator Badge when paused */}
           {!isPlaying && !loading && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-              <div className="p-4 rounded-full bg-black/60 backdrop-blur-sm text-white/90 shadow-xl border border-white/10 animate-in fade-in zoom-in duration-200">
+              <div className="p-4 rounded-full bg-black/75 text-white/90 shadow-xl border border-white/10 animate-in fade-in zoom-in duration-200">
                 <Play className="w-12 h-12 fill-white translate-x-0.5" />
               </div>
             </div>
@@ -774,7 +819,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
             onClick={() => setLiked(!liked)}
             className="flex flex-col items-center gap-1 text-white hover:scale-110 active:scale-90 transition-transform"
           >
-            <div className={`p-3 rounded-full backdrop-blur-md ${liked ? 'bg-rose-600/90' : 'bg-black/50'}`}>
+            <div className={`p-3 rounded-full ${liked ? 'bg-rose-600/90' : 'bg-neutral-900/80 border border-white/10'}`}>
               <Heart className={`w-5 h-5 ${liked ? 'fill-white text-white' : 'text-white'}`} />
             </div>
             <span className="text-[11px] font-medium drop-shadow-md">
@@ -787,7 +832,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
             onClick={handleBookmarkToggle}
             className="flex flex-col items-center gap-1 text-white hover:scale-110 active:scale-90 transition-transform"
           >
-            <div className={`p-3 rounded-full backdrop-blur-md ${bookmarked ? 'bg-amber-600/90' : 'bg-black/50'}`}>
+            <div className={`p-3 rounded-full ${bookmarked ? 'bg-amber-600/90' : 'bg-neutral-900/80 border border-white/10'}`}>
               {bookmarked ? (
                 <BookmarkCheck className="w-5 h-5 text-white" />
               ) : (
@@ -802,7 +847,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
             onClick={() => setShowEpisodeSheet(true)}
             className="flex flex-col items-center gap-1 text-white hover:scale-110 active:scale-90 transition-transform"
           >
-            <div className="p-3 rounded-full bg-black/50 backdrop-blur-md hover:bg-neutral-800">
+            <div className="p-3 rounded-full bg-neutral-900/80 border border-white/10 hover:bg-neutral-800">
               <List className="w-5 h-5 text-white" />
             </div>
             <span className="text-[11px] font-medium drop-shadow-md">Episode</span>
@@ -817,7 +862,7 @@ export const ReelsModePlayer: React.FC<ReelsModePlayerProps> = ({
               }}
               className="flex flex-col items-center gap-1 text-white hover:scale-110 active:scale-90 transition-transform"
             >
-              <div className={`p-3 rounded-full backdrop-blur-md ${selectedSubLang !== 'none' ? 'bg-[#16222f] border border-[#38bdf8] text-[#38bdf8]' : 'bg-black/50 text-white'}`}>
+              <div className={`p-3 rounded-full ${selectedSubLang !== 'none' ? 'bg-[#16222f] border border-[#38bdf8] text-[#38bdf8]' : 'bg-neutral-900/80 border border-white/10 text-white'}`}>
                 <Captions className="w-5 h-5" />
               </div>
               <span className="text-[11px] font-mono font-medium drop-shadow-md">
