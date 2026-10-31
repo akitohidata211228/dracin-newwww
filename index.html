@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="id" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HiDracin - Streaming Drama China Pendek</title>
+    <meta name="description" content="Platform streaming Drama China pendek dan mini series terlengkap dengan feed reels vertikal, katalog kategori, takarir multi-bahasa, dan pemutar video HD." />
+    <meta property="og:title" content="HiDracin - Streaming Drama China Pendek" />
+    <meta property="og:description" content="Platform streaming Drama China pendek dan mini series terlengkap dengan feed reels vertikal, katalog kategori, takarir multi-bahasa, dan pemutar video HD." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <script>
+      try {
+        const theme = localStorage.getItem('dracinhub_theme');
+        if (theme === 'light') {
+          document.documentElement.classList.remove('dark');
+        } else {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body class="bg-[#f4f6f9] dark:bg-[#0e151d] text-slate-900 dark:text-slate-100 antialiased selection:bg-[#38bdf8] selection:text-[#0e151d]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

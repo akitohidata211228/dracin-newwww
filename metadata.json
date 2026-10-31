@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix DracinHub - Streaming Drama China Pendek",
+  "description": "Platform streaming Drama China pendek dan mini series terlengkap dengan feed reels vertikal, katalog kategori, takarir multi-bahasa, dan pemutar video HD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
